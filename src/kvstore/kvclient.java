@@ -14,6 +14,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.transport.TSocket;
@@ -26,34 +27,20 @@ public class kvclient {
 	public static final String GET = "get";
 	public static final String SET = "set";
 	public static final String DEL = "del";
-	private static final int MYTHREADS = 5;
+	private static final int NUM_OPERATIONS = 750;
+	private static final int MYTHREADS = 4;
+	private static final String DEFAULT_VAL = "0";
 	public static AtomicInteger sequenceNumber = new AtomicInteger(0);
 	static List<Log> loglist = Collections.synchronizedList(new ArrayList<Log>());
+	public static AtomicInteger valueToWrite = new AtomicInteger(100);
 
 	static int getNext() {
 		return sequenceNumber.incrementAndGet();
 	}
-	// /**
-	// * Function to print generalized error.
-	// */
-	// static void printError() {
-	// System.out.println("Bad command!!");
-	// //System.exit(2);
-	// }
-	//
-	// /**
-	// * Method to print insufficient number of arguments exception.
-	// */
-	// static void printInsuffNoOfArgs() {
-	// System.out.println("Insufficient Number of Arguments!!");
-	// //System.exit(2);
-	// }
 
-	/**
-	 * @param result
-	 * 
-	 *            Function to process result object.
-	 */
+	static String getNextValToWrite() {
+		return String.valueOf(valueToWrite.incrementAndGet());
+	}
 
 	static void performAnalysis() {
 		Graph graph = new Graph(loglist.size());
@@ -62,7 +49,6 @@ public class kvclient {
 
 			@Override
 			public int compare(Log o1, Log o2) {
-				// TODO Auto-generated method stub
 				return o1.getStarttime() < o2.getStarttime() ? -1 : o1.getStarttime() == o2.getStarttime() ? 0 : 1;
 			}
 		});
@@ -75,6 +61,7 @@ public class kvclient {
 			log.setKey(loglist.get(i).getKey());
 			log.setValue(loglist.get(i).getValue());
 			log.setOperation(loglist.get(i).getOperation());
+			log.setUniqueIdentifier(loglist.get(i).getUniqueIdentifier());
 			endingList.add(log);
 		}
 
@@ -82,68 +69,150 @@ public class kvclient {
 
 			@Override
 			public int compare(Log o1, Log o2) {
-				// TODO Auto-generated method stub
 				return o1.getEndtime() < o2.getEndtime() ? -1 : o1.getEndtime() == o2.getEndtime() ? 0 : 1;
 			}
 		});
 
-		int time = 0;
+		// System.out.println("List A");
+		// for (int i = 0; i < loglist.size(); i++) {
+		// System.out.println("UID = " + loglist.get(i).getUniqueIdentifier() +
+		// " : Start = "
+		// + loglist.get(i).getStarttime() + " : Operation = " +
+		// loglist.get(i).getOperation() + " : Val = "
+		// + loglist.get(i).getValue());
+		// }
 
+		// System.out.println("List B");
+		// for (int i = 0; i < endingList.size(); i++) {
+		// System.out.println(
+		// "UID = " + endingList.get(i).getUniqueIdentifier() + " : End = " +
+		// endingList.get(i).getEndtime());
+		// }
+
+		System.out.println("Adding time edges");
+		// Add time edges
+		int time = 0;
 		for (int i = 0; i < loglist.size(); i++) {
 			time = Integer.MIN_VALUE;
 			for (int j = 0; j < endingList.size()
 					&& endingList.get(j).getEndtime() < loglist.get(i).getStarttime(); j++) {
 				if (time < endingList.get(j).getEndtime()) {
-					graph.addEdge(endingList.get(j), loglist.get(i));
+					// System.out.println("Adding time edge " +
+					// endingList.get(j).getUniqueIdentifier() + " -> " +
+					// loglist.get(i).getUniqueIdentifier());
+					graph.addEdge(endingList.get(j).getUniqueIdentifier(), loglist.get(i).getUniqueIdentifier());
 					time = Math.max(time, endingList.get(j).getStarttime());
 				} else
 					break;
 			}
 		}
+		System.out.println("Time edges added");
 
-		for (int k = 0; k < graph.getList().length; k++) {
-			System.out.println(k);
-			for (int m = 0; m < graph.getList()[k].size(); m++) {
-				System.out.println(" -> " + graph.getList()[k].get(m).getIndex());
+		System.out.println("Adding data edges");
+		// Add data edges
+		for (int i = 0; i < loglist.size(); i++) {
+			if (loglist.get(i).getOperation() == SET) {
+				String value_written = loglist.get(i).getValue();
+				for (int j = 0; j < loglist.size(); j++) {
+					if (loglist.get(j).getOperation() == GET) {
+						if (loglist.get(j).getValue().equals(value_written)) {
+							// System.out.println("Adding data edge " +
+							// loglist.get(i).getUniqueIdentifier() + " -> " +
+							// loglist.get(j).getUniqueIdentifier());
+							graph.addEdge(loglist.get(i).getUniqueIdentifier(), loglist.get(j).getUniqueIdentifier());
+							loglist.get(j).setDictatingWrite(loglist.get(i).getUniqueIdentifier());
+						}
+					}
+				}
 			}
 		}
+		System.out.println("Data edges added");
+
+		System.out.println("Adding hybrid edges");
+		// Add hybrid edges
+		for (int i = 0; i < loglist.size(); i++) {
+			if (loglist.get(i).getOperation() == SET) {
+				for (int j = 0; j < loglist.size(); j++) {
+					if (loglist.get(j).getOperation() == GET) {
+						if (graph.isReachable(loglist.get(i).getUniqueIdentifier(),
+								loglist.get(j).getUniqueIdentifier())) {
+							if (loglist.get(i).getUniqueIdentifier() != loglist.get(j).getDictatingWrite()) {
+								// System.out.println("Adding hybrid edge " +
+								// loglist.get(i).getUniqueIdentifier() + " -> "
+								// + loglist.get(j).getDictatingWrite());
+								graph.addEdge(loglist.get(i).getUniqueIdentifier(), loglist.get(j).getDictatingWrite());
+							}
+						}
+					}
+				}
+			}
+		}
+		System.out.println("Hybrid edges added");
+
+		// Print edges
+		// for (int k = 0; k < graph.getList().length; k++) {
+		// System.out.println("Operation # = " + k + " Links = " +
+		// graph.getList()[k].size());
+		// for (int m = 0; m < graph.getList()[k].size(); m++) {
+		// System.out.println(" -> " + graph.getList()[k].get(m));
+		// }
+		// }
+
+		System.out.println("Checking if graph is acyclic..");
+		if (graph.isCyclic()) {
+			System.out.println("Graph contains cycle(s) - Exit with 1");
+		} else {
+			System.out.println("Graph does not contain cycle(s) - Exit with 0");
+		}
+
 	}
 
 	/**
 	 * @param args
 	 */
 	public static void main(String[] args) {
+
+		TTransport transport;
+		transport = new TSocket("localhost", 9090);
+		try {
+			transport.open();
+		} catch (TTransportException e1) {
+			e1.printStackTrace();
+		}
+		TProtocol protocol = new TBinaryProtocol(transport);
+		KVStore.Client client = new KVStore.Client(protocol);
+		try {
+			client.kvset("X", DEFAULT_VAL);
+		} catch (TException e1) {
+			e1.printStackTrace();
+		}
+		System.out.println("Default value set");
+		transport.close();
+
 		int i = 0;
 		ExecutorService executor = Executors.newFixedThreadPool(MYTHREADS);
 
 		Collection<MyRunnable> array = new ArrayList<MyRunnable>();
-		ExecutorService executor1 = Executors.newSingleThreadExecutor();
-		for (i = 0; i < 3; i++) {
+		// ExecutorService executor1 = Executors.newSingleThreadExecutor();
+		for (i = 0; i < NUM_OPERATIONS; i++) {
 			array.add(new MyRunnable("localhost", 9090, i));
 		}
 		try {
 			List<Future<Boolean>> list = executor.invokeAll(array);
-			Future<Boolean> result = executor1.submit(new MyRunnable("localhost", 9090, i++));
-			result.get();
-			// result = executor1.submit(new MyRunnable("localhost", 9090,
-			// i++));
-			// executor1.submit(new MyRunnable("localhost", 9090, i++));
+			// Future<Boolean> result = executor1.submit(new
+			// MyRunnable("localhost", 9090, i++));
 			// result.get();
 		} catch (InterruptedException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		} catch (ExecutionException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		} finally {
 			executor.shutdown();
-			executor1.shutdown();
+			// executor1.shutdown();
 		}
-		// loglist.toString();
-		for (i = 0; i < loglist.size(); i++) {
-			System.out.println(loglist.get(i).toString());
-		}
-		System.out.println(loglist.size());
+
+		// System.out.println("Number of logs = " + loglist.size());
+		// for (i = 0; i < loglist.size(); i++) {
+		// System.out.println(loglist.get(i).toString());
+		// }
 
 		performAnalysis();
 	}
@@ -153,13 +222,9 @@ public class kvclient {
 		String ip = null;
 		int port = 0;
 		int counter = 0;
-		public static String[] keyArray = { "A", "B", "C", "D", "E" };
+		private static final String KEY = "X";
 
-		/**
-		 * 
-		 */
 		public MyRunnable(String ip, int port, int counter) {
-			// TODO Auto-generated constructor stub
 			this.ip = ip;
 			this.port = port;
 			this.counter = counter;
@@ -167,10 +232,9 @@ public class kvclient {
 		}
 
 		MyRunnable() {
-
 		}
 
-		static void processResult(Result result, String method, int counter, Log log) {
+		static void processResult(Result result, Log log) {
 			String errorText = EMPTY_STRING;
 			int sequenceno = -1;
 			if (null != result) {
@@ -179,19 +243,22 @@ public class kvclient {
 				case kSuccess:
 					String value = result.getValue();
 					errorText = result.getErrortext();
-					if (method == GET) {
-						// System.out.println(value);
+					if (log.getOperation() == GET) {
 						sequenceno = getNext();
-						System.out.println("Thread " + counter + " Operation - " + method + " value -" + value
-								+ " Sequence number " + sequenceno);
+						// System.out.println("Success - Operation # " +
+						// log.getUniqueIdentifier() + " - " +
+						// log.getOperation() + " value -" + value + " Sequence
+						// number " + sequenceno);
 						log.setEndtime(sequenceno);
 						log.setValue(value);
 					}
-					if (null != errorText && method == SET) {
+					if (null != errorText && log.getOperation() == SET) {
 						// System.err.println(errorText);
 						sequenceno = getNext();
-						System.out.println("Thread " + counter + " Operation - " + method + " message " + errorText
-								+ " Sequence number " + sequenceno);
+						// System.out.println("Success - Operation # " +
+						// log.getUniqueIdentifier() + " - " +
+						// log.getOperation() + " message " + errorText + "
+						// Sequence number " + sequenceno);
 						log.setEndtime(sequenceno);
 					}
 					// System.exit(errorCode.getValue());
@@ -201,9 +268,10 @@ public class kvclient {
 					errorText = result.getErrortext();
 					if (null != errorText) {
 						sequenceno = getNext();
-						// System.err.println(errorText);
-						System.out.println("Thread " + counter + " Operation - " + method + " Error" + errorText
-								+ " Sequence number " + sequenceno);
+						// System.out.println("Failure - Operation # " +
+						// log.getUniqueIdentifier() + " - " +
+						// log.getOperation() + " Error" + errorText
+						// + " Sequence number " + sequenceno);
 						log.setEndtime(sequenceno);
 					}
 					// System.exit(errorCode.getValue());
@@ -214,8 +282,10 @@ public class kvclient {
 					if (null != errorText) {
 						sequenceno = getNext();
 						// System.err.println(errorText);
-						System.out.println("Thread " + counter + " Operation - " + method + " Error" + errorText
-								+ " Sequence number " + sequenceno);
+						// System.out.println("Error - Operation # " +
+						// log.getUniqueIdentifier() + " Operation - " +
+						// log.getOperation() + " Error" + errorText
+						// + " Sequence number " + sequenceno);
 						log.setEndtime(sequenceno);
 					}
 					// System.exit(errorCode.getValue());
@@ -227,53 +297,36 @@ public class kvclient {
 			}
 		}
 
-		/*
-		 * (non-Javadoc)
-		 * 
-		 * @see java.lang.Runnable#run()
-		 */
 		@Override
 		public Boolean call() {
-			// TODO Auto-generated method stub
 			try {
 				TTransport transport;
 
 				String operation = "";
-				String key = EMPTY_STRING;
 				String value = "";
-				MyRunnable mr = new MyRunnable();
-				mr.setCounter(counter);
+				log.setUniqueIdentifier(counter);
+				int sequenceno = getNext();
+
+				// MyRunnable mr = new MyRunnable();
+				// mr.setCounter(counter);
 				double d = Math.random();
-				log.setIndex(counter);
 				if (d < 0.5) {
 					operation = GET;
-					// key = keyArray[ThreadLocalRandom.current().nextInt(0,
-					// 5)];
-					key = "X";
-					int sequenceno = getNext();
-					System.out.println("Thread " + counter + " Operation - " + operation + " key -" + key
-							+ " Sequence number " + sequenceno);
-
-					log.setKey(key);
-					log.setOperation(operation);
-					log.setStarttime(sequenceno);
-					// log.setValue(value);
-
+					// System.out.println("Operation # " + counter + " - " +
+					// operation + " key -" + KEY + " Sequence number " +
+					// sequenceno);
 				} else {
 					operation = SET;
-					// key = keyArray[ThreadLocalRandom.current().nextInt(0,
-					// 5)];
-					key = "X";
-					value = String.valueOf((int) Math.floor(d * 100));
-					int sequenceno = getNext();
-					System.out.println("Thread " + counter + " Operation - " + operation + " key -" + key + "   value -"
-							+ value + " Sequence number " + sequenceno);
-
-					log.setKey(key);
+					value = getNextValToWrite();
+					// System.out.println("Operation # " + counter + " - " +
+					// operation + " key -" + KEY + " value -"+ value + "
+					// Sequence number " + sequenceno);
 					log.setValue(value);
-					log.setOperation(operation);
-					log.setStarttime(sequenceno);
 				}
+
+				log.setKey(KEY);
+				log.setOperation(operation);
+				log.setStarttime(sequenceno);
 
 				// Open a socket to server
 				transport = new TSocket(ip, port);
@@ -283,27 +336,23 @@ public class kvclient {
 				KVStore.Client client = new KVStore.Client(protocol);
 
 				Result res = null;
-
-				// operation = (operation.substring(operation.indexOf("-") + 1,
-				// operation.length()));
 				switch (operation) {
 				case GET:
-					res = client.kvget(key);
-					processResult(res, GET, mr.getCounter(), log);
+					res = client.kvget(KEY);
+					// processResult(res, log);
 					break;
 				case SET:
-					res = client.kvset(key, value);
-					processResult(res, SET, mr.getCounter(), log);
+					res = client.kvset(KEY, value);
+					// processResult(res, log);
 					break;
 				case DEL:
-					res = client.kvdelete(key);
-					processResult(res, DEL, mr.getCounter(), log);
+					res = client.kvdelete(KEY);
+					// processResult(res, log);
 					break;
-
 				default:
 					break;
 				}
-				// System.out.println("Fuck!!!");
+				processResult(res, log);
 				kvclient.loglist.add(log);
 				transport.close();
 			}
