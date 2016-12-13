@@ -4,14 +4,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.thrift.TException;
@@ -24,25 +22,58 @@ import org.apache.thrift.transport.TTransportException;
 public class kvclient {
 
 	public static final String EMPTY_STRING = "";
+	public static final String FIXED_VAL = "0";
 	public static final String GET = "get";
 	public static final String SET = "set";
 	public static final String DEL = "del";
-	private static final int NUM_OPERATIONS = 750;
+	private static final int NUM_OPERATIONS = 500;
 	private static final int MYTHREADS = 4;
 	private static final String DEFAULT_VAL = "0";
 	public static AtomicInteger sequenceNumber = new AtomicInteger(0);
 	static List<Log> loglist = Collections.synchronizedList(new ArrayList<Log>());
 	public static AtomicInteger valueToWrite = new AtomicInteger(100);
+	public static ConcurrentHashMap<String, String> writtenVaues = new ConcurrentHashMap<String, String>();
+	public static volatile boolean staleValueReturned = false;
 
+	/**
+	 * @return Sequence Server
+	 */
 	static int getNext() {
 		return sequenceNumber.incrementAndGet();
 	}
 
+	/**
+	 * @return Function to get next value to write
+	 */
 	static String getNextValToWrite() {
 		return String.valueOf(valueToWrite.incrementAndGet());
 	}
 
+	/**
+	 * Function to print generalized error.
+	 */
+	static void printError() {
+		//System.out.println("Bad command!");
+		System.exit(2);
+	}
+
+	/**
+	 * Method to print insufficient number of arguments exception.
+	 */
+	static void printInsuffNoOfArgs() {
+		//System.out.println("Insufficient Number of Arguments!");
+		System.exit(2);
+	}
+
+	/**
+	 * Function to perform analysis
+	 */
 	static void performAnalysis() {
+
+		if (staleValueReturned) {
+			//System.out.println("Returned value was never written before. Exit with 1");
+			System.exit(1);
+		}
 		Graph graph = new Graph(loglist.size());
 
 		Collections.sort(loglist, new Comparator<Log>() {
@@ -89,7 +120,7 @@ public class kvclient {
 		// endingList.get(i).getEndtime());
 		// }
 
-		System.out.println("Adding time edges");
+		//System.out.println("Adding time edges");
 		// Add time edges
 		int time = 0;
 		for (int i = 0; i < loglist.size(); i++) {
@@ -106,9 +137,9 @@ public class kvclient {
 					break;
 			}
 		}
-		System.out.println("Time edges added");
+		//System.out.println("Time edges added");
 
-		System.out.println("Adding data edges");
+		//System.out.println("Adding data edges");
 		// Add data edges
 		for (int i = 0; i < loglist.size(); i++) {
 			if (loglist.get(i).getOperation() == SET) {
@@ -126,9 +157,9 @@ public class kvclient {
 				}
 			}
 		}
-		System.out.println("Data edges added");
+		//System.out.println("Data edges added");
 
-		System.out.println("Adding hybrid edges");
+		//System.out.println("Adding hybrid edges");
 		// Add hybrid edges
 		for (int i = 0; i < loglist.size(); i++) {
 			if (loglist.get(i).getOperation() == SET) {
@@ -147,7 +178,7 @@ public class kvclient {
 				}
 			}
 		}
-		System.out.println("Hybrid edges added");
+		//System.out.println("Hybrid edges added");
 
 		// Print edges
 		// for (int k = 0; k < graph.getList().length; k++) {
@@ -158,63 +189,89 @@ public class kvclient {
 		// }
 		// }
 
-		System.out.println("Checking if graph is acyclic..");
+		//System.out.println("Checking if graph is acyclic..");
 		if (graph.isCyclic()) {
-			System.out.println("Graph contains cycle(s) - Exit with 1");
+			//System.out.println("Graph contains cycle(s) - Exit with 1");
+			System.exit(1);
 		} else {
-			System.out.println("Graph does not contain cycle(s) - Exit with 0");
+			//System.out.println("Graph does not contain cycle(s) - Exit with 0");
+			System.exit(0);
 		}
 
 	}
 
 	/**
 	 * @param args
+	 * 
+	 *            Main Function
 	 */
 	public static void main(String[] args) {
 
 		TTransport transport;
-		transport = new TSocket("localhost", 9090);
+		List<Future<Boolean>> list = null;
 		try {
-			transport.open();
-		} catch (TTransportException e1) {
-			e1.printStackTrace();
-		}
-		TProtocol protocol = new TBinaryProtocol(transport);
-		KVStore.Client client = new KVStore.Client(protocol);
-		try {
-			client.kvset("X", DEFAULT_VAL);
-		} catch (TException e1) {
-			e1.printStackTrace();
-		}
-		System.out.println("Default value set");
-		transport.close();
+			// Server Name
+			String server = args[0];
 
-		int i = 0;
-		ExecutorService executor = Executors.newFixedThreadPool(MYTHREADS);
+			// Get the server address
+			String[] address = args[1].split(":");
 
-		Collection<MyRunnable> array = new ArrayList<MyRunnable>();
-		// ExecutorService executor1 = Executors.newSingleThreadExecutor();
-		for (i = 0; i < NUM_OPERATIONS; i++) {
-			array.add(new MyRunnable("localhost", 9090, i));
+			String ip = address[0];
+			String port = address[1];
+
+			transport = new TSocket(ip, Integer.parseInt(port));
+			try {
+				transport.open();
+			} catch (TTransportException e1) {
+				e1.printStackTrace();
+				System.exit(2);
+			}
+			TProtocol protocol = new TBinaryProtocol(transport);
+			KVStore.Client client = new KVStore.Client(protocol);
+			try {
+				client.kvset("X", DEFAULT_VAL);
+			} catch (TException e1) {
+				e1.printStackTrace();
+				System.exit(2);
+			}
+			//System.out.println("Default value set");
+			transport.close();
+			writtenVaues.put(DEFAULT_VAL, FIXED_VAL);
+			int i = 0;
+			ExecutorService executor = Executors.newFixedThreadPool(MYTHREADS);
+
+			Collection<MyRunnable> array = new ArrayList<MyRunnable>();
+			// ExecutorService executor1 = Executors.newSingleThreadExecutor();
+			for (i = 0; i < NUM_OPERATIONS; i++) {
+				array.add(new MyRunnable("localhost", 9090, i));
+			}
+			try {
+				list = executor.invokeAll(array);
+				// Future<Boolean> result = executor1.submit(new
+				// MyRunnable("localhost", 9090, i++));
+				// result.get();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+				System.exit(2);
+			} finally {
+				executor.shutdown();
+				// executor1.shutdown();
+				// for (i = 0; i < list.size(); i++) {
+				// System.out.println(list.get(i).isDone());
+				// }
+			}
+
+			// System.out.println("Number of logs = " + loglist.size());
+			// for (i = 0; i < loglist.size(); i++) {
+			// System.out.println(loglist.get(i).toString());
+			// }
+
+			performAnalysis();
+		} catch (ArrayIndexOutOfBoundsException ae) {
+			printInsuffNoOfArgs();
+		} catch (Exception e) {
+			printError();
 		}
-		try {
-			List<Future<Boolean>> list = executor.invokeAll(array);
-			// Future<Boolean> result = executor1.submit(new
-			// MyRunnable("localhost", 9090, i++));
-			// result.get();
-		} catch (InterruptedException e) {
-			e.printStackTrace();
-		} finally {
-			executor.shutdown();
-			// executor1.shutdown();
-		}
-
-		// System.out.println("Number of logs = " + loglist.size());
-		// for (i = 0; i < loglist.size(); i++) {
-		// System.out.println(loglist.get(i).toString());
-		// }
-
-		performAnalysis();
 	}
 
 	public static class MyRunnable implements Callable<Boolean> {
@@ -234,6 +291,12 @@ public class kvclient {
 		MyRunnable() {
 		}
 
+		/**
+		 * @param result
+		 * @param log
+		 * 
+		 *            Function to process result
+		 */
 		static void processResult(Result result, Log log) {
 			String errorText = EMPTY_STRING;
 			int sequenceno = -1;
@@ -251,6 +314,10 @@ public class kvclient {
 						// number " + sequenceno);
 						log.setEndtime(sequenceno);
 						log.setValue(value);
+						if (!writtenVaues.containsKey(value)) {
+							staleValueReturned = true;
+							//System.out.println("Returned value was never written before.");
+						}
 					}
 					if (null != errorText && log.getOperation() == SET) {
 						// System.err.println(errorText);
@@ -260,6 +327,7 @@ public class kvclient {
 						// log.getOperation() + " message " + errorText + "
 						// Sequence number " + sequenceno);
 						log.setEndtime(sequenceno);
+
 					}
 					// System.exit(errorCode.getValue());
 					break;
@@ -292,8 +360,8 @@ public class kvclient {
 					break;
 				}
 			} else {
-				System.out.println("Empty Result");
-				// System.exit(2);
+				//System.out.println("Empty Result");
+				System.exit(2);
 			}
 		}
 
@@ -322,6 +390,7 @@ public class kvclient {
 					// operation + " key -" + KEY + " value -"+ value + "
 					// Sequence number " + sequenceno);
 					log.setValue(value);
+					writtenVaues.put(log.getValue(), FIXED_VAL);
 				}
 
 				log.setKey(KEY);
@@ -359,10 +428,11 @@ public class kvclient {
 
 			catch (TTransportException e) {
 				// e.printStackTrace();
-				System.out.println("Server not Running");
+				//System.out.println("Server not Running");
 				System.exit(2);
 			} catch (Exception e) {
-				System.out.println("Error!! Thread Number " + counter);
+				//System.out.println("Error!! Thread Number " + counter);
+				System.exit(2);
 			}
 			return true;
 		}
